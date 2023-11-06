@@ -1,0 +1,178 @@
+<!DOCTYPE html> <html lang=zh-CN style><!--
+ Page saved with SingleFile 
+ url: https://cliiip.com/posts/mysql-datetime-timezone-pitfall/ 
+ saved date: Mon Nov 06 2023 15:49:05 GMT+0800 (中国标准时间)
+--><meta charset=utf-8>
+<meta http-equiv=X-UA-Compatible content="IE=edge">
+<meta name=viewport content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<title>MySQL DATETIME 时区问题防坑指南 - clip dev blog</title>
+<meta name=description content="太长不太长不看直接上结论 MySQL DATETIME 字段在存储的时候只存储了时间的数字信息（比如 2021-12-04 14:15:38），而没有存储时区；
+由于没有存储时区，所以就依赖了 MySQL server、client 运行环境的时区配置；
+MySQL sever 本身运行环境有时区配置，now() 之类的内置函数，或者 dt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP 之类自动设置的时间依赖的是 MySQL server 本身的时区配置；
+MySQL client 一般是应用程序，当通过对应语言的 mysql-driver 连接 MySQL 时，在写入、读取、范围查询时对于 DATETIME 字段实际发送过去的值是字符串类型的，比如 2021-12-04 14:20:12，也是没有时区信息的，应用程序往往会根据配置来解析成对应时区的时间；
+所以使用 DATETIME 字段几乎就必须保证所有相关的 client 和 server 始终使用一个固定时区配置，只要有不同就可能会出现问题。
+比如：
+ client 使用的时区和 server 使用的时区不一致，那么 sever 的 NOW() 或者 DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP 得到的值被 client 读到之后发现差了几个小时 client1 和 client2 同时使用一个 server，但是 client1、client2 的时区配置不一样，或者 client1 原本配置了时区 Asia/Shanghai 后来变成了 UTC，那么读写老数据的时候可能发现范围查询有问题、更新不成功（按时间大小做限定条件更新）、时间范围查询丢数据……等等的诡异问题  避坑方法：">
+<meta name=author content>
+<style>:root{--gap:3.5rem;--y-gap:8rem;--wide:140rem;--narrow:80rem;--side:calc((var(--wide) - var(--narrow))/2);--header:8rem;--footer:calc(8rem + var(--safe-bottom));--light:255,255,255;--dark:22,22,22;--hljs-bg:#111;--safe-bottom:0}@supports(bottom:constant(safe-area-inset-bottom)){:root{--safe-bottom:constant(safe-area-inset-bottom)}}@supports(bottom:env(safe-area-inset-bottom)){:root{--safe-bottom:env(safe-area-inset-bottom)}}*,*::before,*::after{box-sizing:border-box}html,body{height:100%}html{-webkit-tap-highlight-color:transparent;font-size:8px}body{--white:rgba(var(--light),1);--black:rgba(var(--dark),1);--pro:rgba(var(--dark),1);--lit:rgba(var(--dark),0.64);--air:rgba(var(--dark),0.48);--fog:rgba(var(--dark),0.12);display:flex;flex-direction:column;padding-right:var(--gap);padding-left:var(--gap);margin:0;font-family:-apple-system,BlinkMacSystemFont,segoe ui,Roboto,Oxygen,Ubuntu,Cantarell,open sans,helvetica neue,sans-serif;font-size:2rem;line-height:1.8;color:var(--pro);word-break:break-word;background:var(--white);transition:background .4s ease-out}body>*{flex-shrink:0;width:100%;margin-inline:auto}@media(max-width:1199px){html{font-size:7px}}h1,h2{margin:0;font-weight:700;line-height:1.2}p{margin:0}strong{font-weight:500}ul,ol{padding:0;margin:0}a{color:inherit;text-decoration:none}.header{display:flex;max-width:var(--wide);height:var(--header)}.header a{display:flex;flex-shrink:0;align-items:center}.logo{display:flex;min-width:var(--side);padding-right:var(--gap)}.site-name{max-width:calc(100% - 2rem - 3rem);padding-bottom:.3rem;overflow:auto;font-size:3.4rem;font-weight:700;white-space:nowrap}.btn-dark{width:3rem;margin-left:2rem;cursor:pointer;background:/* original URL: https://cliiip.com/theme.png */url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAAAyCAMAAADRCBYYAAACfFBMVEUAAADNtIvz1nw/Q0Xy023RnQr01maecFExOEBeYmYsMjclLjf0yjT95VRMUVdDSU4qMjlWWFmXfkX1yTbyz0/wxBbyyTsbIyoqMzwqMjqLjY/+6UbxxkDwuy2LioXquTT81RwdJSz/71Depz//6jHWmCTXpy7iozr/8i7Vog7+1TG2ji5qWzL+8EUlMDv81Tb+7TX72TneniHOnCHgoS/50CbvszEqNkPxuS/65UaqdzTxtzP200zpkybPcRrYgSX1szD55EgxQl0tPlgqOVEjLz4nNUkoN040RmMsPFQjL0UeKTslNEUmNE0cJjIkMUoVHSf/2jj/6T44S2ogK0L/5VH/6jf/7UH/5DoZIi3muCH/4T3/7jrZsEohLDjyxisQFh31yjD+0Tf/5jT90y//8j77zkT//0j/80X91jP+3EH+3jj+2Ujsvinuwyj/40P+1UH9zj3/4jL/6Cn+00r8yzT/+kcMEBXWog3zyk35zjH5y0vpviHZpxP/3FL3x0ThsR//+T//3kn/4hb4yzzwxjvdqxrftkrQqkzlukvzy0P/3SHWsFf/3jD50Ev/4Snou0P91FQ8RE7ww0v/2xD20VLqv03/7i3FpF7ov1jvwjT7xyz/6UjwwUL+1h3itRb32GXRrWL1y1P/4yL64XCDdFLhtD311Fy5mE+sj07+2iv/+CbguFj/+TdQUlPBnk7/7SH/9YD/7E//8zL/9Bb+63jIpEvUqjvux17+yyjzyRufh1FjXk/2zSnnuxDfuWJyZ0mPf1q5lkH+3F760Bf/6Ws+Slz4wjZual2CbztMSTs4OTT/6F4yO0bNoTD/9nKslWT/81tNV2j2vCZUMI+rAAAAQnRSTlMACA92Hf4sD4ghk9mIOTdby0j+p0r9dO+5qBt0XdIy/ubjXjffmIZY6+jY/fx/78C+r9C4csuX6emZZbvZgIBF+t8lTo48AAAcKElEQVRo3pWbh0NTVxTGCSCiUAeitXVr1bpqq221u4UMMxhJhQSSgIxQICwloAzZCigzkQCyFAxlCVZaRAEFtW7t+of6nXtfAiIonFK78jW5v3znu+e+93Sbq0ReG9f5+q7z9xK5LbBIsWvX5z9sXoRi9+ceHh6rF6HYvNrD23txipVOxeLrPc93v8bd3/eLrQ8vlZaWXrr0cOsXvu+5L0TR8t+dlv+KXu3z27/Ke/XSBSg2HX11/tX+5xGhoe8vTLHr8P7nz4LxelIsX/FOxdLV3quOSCQqlUoikRxZ7w3F4srz4Br/t0N29916qbQrsyuzcTgzs6vr4sWHD7euE71D0d5++/btlvisy9239u17HhWxzeMdir23Wy7f6r7V/fSZRKkMBoF3KdZterXvuYSVMjgiIvTEife9RW9F5eGjUkmlUplYLJZJpUTsiIdokbS+Pbdpx9s+1NbSrq7M2ou1mVSN9MvF9vYv3ptfsWHrpfb2+JaW2y0t3Zcvb7l1y29/lDJ41Yq3KfqysraMvLp16/7LST8FrR8A3qZYd/Tyfb/nEiVeqFQoGN/Q0BNQzI/qCEixkgGXnAFTSNZDsZjy+vZC/pee83Xp1ktdXV3DjY2Nw8PXr2dmDjNYVL7u8yoAs68vPj4pNvZcN8G6//T5c6VS4r10HsVHfbFZWQlt3XV1Iz2DkkmpQorl0/rnVex93H3rvhVUAUChlCi4u9COy+dRrPCRwFZilDwwMJBgCfaS4j0WUzuuXEg96u82V/mubX+Y2Xj9enGxobi4+Jfi69eJW2ZXO2ht9Z3Lw1/1XbzUlXnqlN6sTlYnJ2eca+sGLVgL9cmcfeIbn5ul1lvyRpsH7lUNVE1hESqFQGvb3IrHdd11FVZ5YAArORZN3gqlmrsXvcFTKg4MOHYMP6iAwEDmLQXy6wgUi6jPH+RcTvOdw+xr1j68kzlsMhQbwsMNBlPxL78UgxeIwVzt7e0HPd9QfNZ+qb0r02zWq2NjY09mJOsTCtvquuEtOEspiVq/7E3F7fgYc0mzrbkK1VR1r/lRoFxOwBitiDkUax7DhD2PgErOeQXKWUspwerEidOr3lAs/UApkUjlAQHH8GJOi8vkUpUU3wveYxG15hporZkN2P2bu3fu1A4Xx1GFAxdoARfj1chobZ1FS3Sw/dKlG5n6JHQgwTqZYc5ISKhrG7k/8kxCFeWzbJbiMySbvmR0oLKqwljR1NRU1fwE3zs1ipQn/bZls1lt2VLX1vNILkaBFseFlyukkmBGa7ZCtF55HKyOBcqBh5vx55+ZvQLkMlhLIfFZDC3PmisXLufPoiVaA1YPw4sNp05xVgZixXCZiocba2uxL37h9frKwao0U6dOiuesTqr1KRaLzVbR21vxUvEmLbzH7ZbH8cn1zZXlxqqqq4A1MPqEvvdAYIC5iNZsxZbu7rbKwQCrlfIHRYYBXphLpmS0TsxSfKA8flwiCwgQ0B7Dz89Ei7WwmO2LqxZD68s/fz2XNqsTfe+uffiwLzwcrADLwNoQlW2iADPFGZD1oDUT8IGLlwArzpwEZ3Fj6ZMtKZbyyvIhP+Pky0kV4Vo1U+GL+SJLbbFVVhpZFzZdbb73778/s2UEiFUylSQqOOJ1xWOCNfRofDyQFu9sq0BqRbEimJkr9DWFN1gpVGKYlZNFgRW3FizJcOFTLcZa13LORadtdJuudXfX3mlvrz3FfQVUBCs7+xfmMUqx4WEk/cM104oNfWB1sbZa3adOilWrM1DJyQmWnCFjuXHEWPls/CUbbj6YoSBWj0/m2e32AbC6Cmvdazr27zGCgIVhmydaoTMVyKtuY8XQpJ+YbMKKlh0EcjJxIIIxGN6aqfAgVoogmVjG0TphBXKtnAckPtXC65s/fr1wLjp1OoO87hKsvlMonleoYvJVOFWc6RcEF4au9ocbXYq+i2AFWNVqlACrxJJXXkGwRmxGq5SPgitdinhiVVZos9srBwYGCNbVq3//TJlFfXjsmEwmlRCtaUUZtgujcaR3bFyIq2PoKRgL6MQyWUCghOdWhEuxTEKwQoIwXHFYAise8YHkSU5r5SI2xLArORdiYlw+EW0Cq4d9fdVgxaxErLKRV/gHghVOOT88jPl0raeg+JQZ62K1E1YyWKWUpNgq0GMVFUPGnCmrTEZe+WSZcztAuGeVFRbabPZmwLp39eq9q383/XuMFoU1BCCS8XLQet+lwNBAxurttQpLxw8WLmajQJA4QKoKhrVOh7oU6xkrwOJO5KxQJA1AH6Ll0aDIeXyqhZZXLlkrJto5bm0kY/Vh4dSEcbQRmghVcbZBgIW0LzYZMNk//JIrtl+EsUprayExM1bJyenpKZaaHGOlvdxY0VNRWT4lAy14a7mgaIexYhMSbDk2+wDBund19N6TKaydRbaYaIilLLYExcYsmlwrRnp6J2csHcvGJod2UolBNwrWOn06VFCsVAKWKigoCLsB0MCGs2DhL4K1oFhgiY7+cQWpFX3QZSzAiiNYYAU0KNBCmQwMFqyVnW2KO9XXfodbS7S3FsZqJFhmM6GCsdLTS1Jq8ipRRuPQkNE+hU6hVvzkQ66Ix05YkpAHZ8FYzTDW1ebRpn+xED4FcWspmLW44tuyOuyEFUM9U5POsMbyqQ1RSOogbKEK6sPTJwSFD8ESA5aM4h0CVxuiWDDiVw4Ln2rBofUX68NoL57uYEXO6gMsQ7gO6a4J12myKbNM4RoDaOlMqLi4vruRa9cxm9SSsTJria8eQ2kyi6z0gvo8m728kqw1Yu+1irm1PPh+EJ+Vpc4obCu0dY42NwMWImvgKlsH60N4AQQUKgnmB6bYfrKwru5C+UhPz5jDuXQ2M9HmSf4IkQKWBLDQiB4uYymCCJY8wKXgsAgTQ05THbJR4rHw4eGvaw05ZTEta7ixOu7m34meSMLKWbyzMv2SnQhC5CydTqfR6HTh4dXnO/I3iSixaksvlSLeodDBWskcVlhBTU1ODrEaGeqtcgyOyxHZCtUqETMWYJUh3gtzOpubKbKaEFpTwoBNnNBVaFyJJDRY6SNixgIso5FgDU4765jTiOKgEIVMcfy4MpQakSlWgRX2whCCNcNZ/C9cRajAGScMKBZY3/1z7dcGWIsN5e+tJVgTE31YejjL9mJkVna2VqM1mLQGg053ymw2J6l1hriOjvy1O6AoRRcCFh81dJRXSPeSgry8mjxEEhK+x693UNYzKZYBlmQFFH3xLVlZhWUJeXhNfT2cBWthL+RJxDIIpEKC8KVHBCsjSJEAVuVGI9qw98kTindegXxDQLMpjiuOY1rnqQXFCokAC/8nOUMlmGrmCVFM4S9WQrdiwbBuEixYy5+6kGClTUwknao+ZcAmiMrWaExaDfyUbdKaNDrEEkZPnSZ8bcfaOxvRU6XUhV21mXGn4hoNWq22tbUkJSXFkoeqz7EZhwBrMijIMSYX0yl5JRQwFpx1MsGSZykpeHDlyugotsIpJwPAksmCsI2hRYJRpCjksBDwQ1WDzvVSSrMShwSRregQGgFYJ6DwUM6AxVkxUFzLo11G6Y9uB6yVC4bVymBltfhSgK3tiCRYGLPUSCqqRIDSalAGbaIWqAArPl6t0/V13KH98FOCdREXvjDtDxcnJia2hhVgeAcsVE6e0THUMwZYYodVTtbydnP7jGCdxJQPWDdfPHhxZfTqE0fT2COnXbA+wGITEvoweDkUhW0Eq9w41Dsy8MTpjQBnyUAFsILpAE4Rj/f4QMImUhDnsNh8xRzG1bAVvQmshT48rvBelLMKy7JyaT88eodgRU9Um3RqXSJshdVrEPMYFkxwmhaoqtXxqKQk9Z07aze5uX1UisgCrEaD7tQwNsqbBIusVUO0OisGe4Z6x+k7RECoJKpVUKg5rPSCzpqwmy9e/Dra5Pi7qQkzKYcVxGFhRpKStXzc3H4SYNmfWIeqHDx0mBG5W6RKwKLTJP6EtULxHkcU3FlB6FFxoKBg0Mhl9IWIuX2BS4GT2IID/p8/rhCslgsiN8+1E5H5gBV9KlGnVmtBSkuu0tJuWJyY/YtWnYQmJFjq3ImJOx3n3T37b1wqRRfe6C9G7JvIWCVowxL8asmrqekcs/b09DjgeHw6NgGKPPvN7PioTnzRmZcS9uDX5oEmFBL+35+xGMAKomUoQAttGxXxvshTm9fWBlj2hkdWv5EnLJ4DySfCHKACGIKFimBzqehDiYqxUogDAIUnG7vmwEtwL4MVwqblhSb8Jg4LtDzd/O/2RZKz0ib0SWqzBqh0Zh3aEJx4S1ITouCsify0tI6zXv79N0oJVlejSYcdQcsCC7Baw8LCCgoKOqeCeod6x8QyKikNNZv9+zX8rJ0ehswKezBa1TRURVdokPFsISGAxWlJlIAVutnfVMNgVdoGBx1DDpbObIsDLmpIqZLindGiC1tQrJZIOawgFuKkAF4U+LKO5LCIVoiCLiBuXhgr9//+Aqy8hJNZue+5bQSsjvw00MrNhXs0BMtM04JWyC8doWKplQ+qHR3+2/v7GSwEvE4XZyBYnFZ6GOGqH7Bax3qnHFZixY7Hq7f3awkWaNUU5tWEFYxW9TRVkbWam7hRsBFSYakAgA1u9XZTPYNlNPb6Ofx6HsFYqEAUnwLESqrjgBVxAhUasXqlRMZhAQaMSnsBF4AWz6wgFGtE7KOAtXphsPzjf7t2pSEBsG5vdPv8bnwkC60YsEqKRyNqgEqLTuQbIxI+HnODVh0fHZlf1NFx1n+D4CxMDjodvNXaylDhh8Oq75WJx3oqxqdhHRCclZCB/K+xFHQ2w1Z0lK66+i8frkMUGI7kWAYxAKwN3Fk0hTjGxY5xtCCKnVmocNmTWIUoqAlPYDeMWO3hdBY1mkCLzeyu3VAWQjMFfAVTHl8wrC81BKuGw9rVMcFggRZleEwSMFEPJmqzWSWCFrVneFJ+fmRHR8cZrwOvwdLrdK2IrHSMD05YnQ6ZdaR8io4kDNbmA/16DishoTAnz5aXM1p1tere6L2/x6aEIJaH0CQpUyg5rM0HTDltbXy+dQzKZJNWRkoYLtnEpAhWopuwFWJyAKzN07AYrRCixQ7eXIaiiIcU15bxwoW2oYgi61eCFdsCZ52dSCsqYhGfi37LjUFgsXQXWKHQmBqNOZ5g5SOzNjT+3iXAigMsva61Nb018eZNkKLQqu+srwq09g6Mu2AtO9BoUmdRGxYWJuTl2O2Fnc0Do1dG7zm4r6hov5e7YC3boEmx1ZGzhoZ6qZ8HccIRdjhhupTCWbi2DGMRrOBlHlFSBWChOKwQrmAaJmPHQky/DBa2kYVdeNid+9c1glWWlXXb3233mTsTkRxWTJIZyWTWmM1aRonDyk7UUIiZKbIiEfCe2xt/v+GEFa4BLKSWBrCAS4A1MCUeqxjE5+Jt+OH2Gyb9SXIWylJjs+fVN1d1PrjX9GgqwFlyNv+oOKyID7frSmyVdZUMlkMcxC/3cVeBFbtqj0kBbENPs8wK/nBlsErlggUFJDBSgKu4teT0jaAPMTt8uDBj3fwNsHgberl5nbkLayG6CZY+HqVTU3KxImRsf9TjFk5aB14EWF7D/Te6cDMWsBDver1e01qSrAWqm842bK4aHJ/C5yJWMsDy6r+eniHASimw2W2WzorK+tGeR08e8a+djdfMLigJYHkZWnMqyVl0NpSzs7EsSMxRocBVqjpOd10jYCsGa3OUBNbisGRil2ImKzAWQ0vGUi0Q1u6sv/4ArBoK+BZ3N9Ge89E0aaVGR1Nq5ebGqM0422hRjJcWsDR6xJaaXpXfsUck+rj/98wuwIoDLTgrWa8tSU5PBCqq+vr60dGBMSuMRTetsKgjpDBlxGaAViF2Q7u93NZZZbQ1VAU6aIJyxRBdK2WwtkGhTSmvo9DqJWehxDJKNTkrMYOlYC7E+I456xOR6BOJNITDog0RJWMKVACK572YCqd7wDoiWqSxsvbiXxw+Gxmdhi6MjwGtXNDKTcpN0mtoP8R4Clb4O318ZFpudH5kUcfZwzju9P9+I/MGbu/HIeEJFg7S6a1CZtWTs0Z7sFOP43OhVOtJcV1D1yZKQKvQhmteAGbvHHg0OMjMwrpLLFOopAQgKoIUWljLjlsbY36ARYWliwkUkWL/ZwUsiDEL1jpNivUSFQASKHiLcJGCm9H1HnIxGEqJqASKd9dO9W+CsZBZdI1m19mO/InUtImkmOi06CQzmQvMgImXBsz05tTIGMAqKjp/Zhdu7Az/TrQah8NBC/81nV0oDXMFPMEalFkrrGJ2ZdkDiv7rJg2ghlnIWw2VlXSQsVc5AqeL2iMIAKIQWd5QIAjz7DZ7z7ifY5y1FY1PYpevCJYyNELJYJ0ghQfurUrBiR8ynQpYawYvOUYUMZDibbzdvETvbMKWf5ixOKx1dEP/zHn0V3RubhoyPkkdEwNWuUlwFa/0dH068iotJjqVjLWELtEM/w5aN4YNcShDazKVXnNzBqzmXsAaYmvil2j6r1/XIttSWMTbynE1tbwyr2r8kQsVYMEViBLaDElhaC2x5OTZBx29uAYvDmErl3Fj8f+visGKoMkhNBiKFVH0fBEan7WgUxH4WsnpP3FYK9y2fyV6B6sf/4GxXLC8aJ7fg2t66ETa64ApN4ZKD0y6dD2VGnEVD9elYTfsOHNIBMVH/YDV32im7RA0GaxEYS8ELFwJnUJgW9lQKllFio+vw1qJJW2FhRkpFnslwbIVDDBWQhCBAHUHdaEPew9ta4qlvkcxdn9kjM5CqCDOis5QbMHwIL/Ryu42inzQh4AVQq2IgsBlLPxFeBM6qlNkQSH66TP3t7I6elNgVZOAo+FBhnbnWWxzqalFRUWRacCVFo0yazipdER7Ehu/GKyzS3ZDgK6CtfrjcG01M1w3A1YBVQOGqMqxQTELbOdtp6/6Qct0oa6tLcOCu2F0jrEV/M1XQC1IRQQkdHuLKQ6YYC3L+LP7942TQRyWlG2DVBRYBAsDPB2jI6CgPlQRK9rr2HGZSqDEgFHJuCklUaTYoPnG/W2+Elg1gBVg+fObrrAWXEW0UlOjY9JS09LS4vW86BStNsfGwFmp+fnnz+xxZ4qP+wEr3FxdXYuxNJ3ur5o1vAlhrJwq+4DDypelUvks5Qo8nWNKaStsK8MQD2MBVo4Dq+CrwZbO8o3dC9smKBLTSyyT1vv3KyZp6bCd1UpMhbtGCicsXKDh7/HhJxLAChJGLZ7zspm+oi+Fu10CBbn35rc75tsHd17mPUjGugBWe0VC5p85XxSZSpmUGpMKLjHILbUZqMxmBisWvUmsis6e+ZwrviJYjTozYKFbkwEL4S3Aqums6hwSDzJWPN5d1kpHvJfRHR6wqrTZBwcDBrEQzoohUJCxnAoN7hdVDDruV/gFCUEkkxEsblgchfljWjjrCIrlEqIVwvoQfzAJd5VAy+X2KK7YXvtidBewvVk/HMp1ssq5AFZlMYh3wVpnzqIFo5HwkakxalZ6/IHCcwxJQAVfRUZiK6TE4l/770SL7pKZdQbEVrq2lQ8OBTU5ec0VI1arwGqVSzE8bNKmWxIyUtoSUnDkyamvGuylRXBWzFhoLSSWS5GeXJJnHBupGA+xjss4KRQLLGAFLKELnYplnzBaNDUAE1PIXaRcrOh9BIXoi1P/XDv09Rs5v+Pwlta/XKwIVozrOQ8cechbCK5o9GEsCOXGAhTOvsj72NzoaLDCjFVEW6FQ2xtpP8SzbhpznMGUqG3VtmKEL0DK1OR02nuxGcqErdCl6B82gFZyek1bQklYfQP2TEcvViAQEJoQo9O0QpeeQg8EjIhDxsfAc3oj5DsBGYvyPdilWBnMaHFe7EuQz0Tlepsop+K9vvQXf3Ye+v6H6ewS7fj+0Jbkv34jVldcrGJmPCl6GLTO88xikzzByiVWMXAVDQ3kq7NLPp9WfHoDtDCXhuvo2QjMYzhK4waPxYKDcnmFwypFcbu7FI2NBgN6OyUPl6BhQGyaT8QCgWlWoTMV5oyMhEpjuSMIzsKLyIF8aKCNQGB1eqZifZSEzw80kxEr1zYod5F+7VMdqDaH/fnbte59h7//mur7nfvOl4UxVOSrTmJ17ty5GN+ZlwPRiGfJXKmotBgUjRBEKhqkUhmqM0t2zVR8dAPWgreGAYvf4UHEwAl0L2zc7yWhwuT3mqIxHOdutCyufFlgQXvFoNjqTGwQYI+FLH9Noc9IKMQJ0UEP0k5D5aioCWkinfkeS30YLbwcRbBeI8XU+EJmKEQH+/RhL9ByfzxoAJULDWF/ghRQcVvl5HBWa17v0j1nzoAWcBEvIIKfGDgBFbE6LHr9SdobpawRAYsORq2AAAQ23GVFKvON7YOlryk+bsRYhoCzMFi2yvIxNokL3zexipil+MiM42SlcYitnqNScFs5x4YTrytWbCNaUioWcU5Q+EHN8anc9/aZw168+PPPP/74jRW4Cag6GSrU5TXo0lm0lpw9j1502ouBQiGrYKvZrFBeH5eWohEzEfI6mvSxKdJhps5Y4ffUihXhU72hyKyO0+npgRs8yZVTbpy0oq0U3FXMV+uheJ1WbBmsNWS1vgSB6bhysTpNijdpkbkIsBNUkFRQw1ezFJ57cUcdly3BC3UNP9cePECwN7hQXV7z5g5wCN4CriKnvXhQUXFWoDt7JbiqBVxxwMUO1BkZhYX0vLLfU1r6LF9xRSaurqrxwoSMQlu50fryJQfFbRW6/k3FXvVJPKbqh9dRqzpbkIqxelOxgjpRItBCUaizNufBEPzGp/I8iM2sBDFa8IBV/YP6BobKxWqOydUdtBgvtCMoFTFH8VqyZMlO0RyKT0vpJn5tZnW1DpN+Bq6E0sPKt3qfAVUU0mcORWZ1EgY39blCPAp/f1Lx8iUtnhYBVnMqDsbi6fr7k5MEgKDyDhTyai7F0lXBkijMrJgvQIkVGKPoCwyeQyH6Kj6JHscDLosFF00aanIaplFd9p3nIbclZ5Ys4fZyWQr8gGrPPIPuhtLS9vaLtfQYHCaNMnpUr9fv1jNlVLDP6nkUtXjsIZZdYu4GAXquWWiqbfMpYrd033r19DkDFUWvxTYYQbaaT+HxflSUYC+yFLHi4uC5FfAvf4g4IwGFgd1JCqw2+c/7lNthTgu/4hf8cFZ7drrPq/isHdXXl5uKZyAfX+7uvvX06X48YrV86fyKJHpIJOv+01vPnu8HKb78typAa9/TZ1HBz1gDghSL9vkVyz6IilIyPvSrs8+V87+H+7q98bdxlyDhZBnqnOApoFr3tqO21849jA88Ri0JWEv27PJ0e5tizVbgwjOQqVtatnS/euUX9Xyb97J3KOjl+/bt3+/3nN9Tfn/52xVfHn2FL4E4CahOvEOxYvn7wbAXYCmdkfj2T+W+8QvAwvj5OObyZc4qddNGoHpree7eeQiwgIuoHdq5G4J3KDau2dvyHyq16Py+/auWr1y6AMWmLa9e7dv3DKAifD5YiGKnH37DXVQokQrdtgDFspUf+LyPK6loPpTPuz+VyGvdZxdiWv6LjiZPHf1m3Q7Rwm5Z79i9a+fOXZ/7k6cWpnhvo++Xu3Z9vfrDBSu88B7LvT0WocBvtVy+KIVoxUrvxSk8/df5zv/bUv8Hegx9d4HVPogAAAAASUVORK5CYII=)0/auto 3rem no-repeat;transition:background-position .4s steps(5)}.social{display:flex;margin-left:auto}.social a{width:3rem;margin-left:3rem;background:var(--url) center center no-repeat}@media(max-width:1199px){.logo{min-width:auto}}.main{max-width:var(--narrow);min-height:calc(100% - var(--header) - var(--footer));padding-top:var(--y-gap);padding-bottom:var(--y-gap)}.post-title{margin-bottom:calc(var(--y-gap) + 1rem)}.post-title p{display:flex;margin-bottom:1.5rem;font-size:1.6rem;color:var(--air);transform:translateY(.4rem)}.post-title h1{font-size:5rem;transform:translateX(-.3rem)}.post-nav{display:flex;justify-content:space-between;margin-top:var(--y-gap);background:rgba(var(--dark),.05);border-radius:.5rem}.post-nav a{display:flex;align-items:center;width:50%;padding:var(--gap);font-size:2.4rem;font-weight:700;line-height:1.2}.post-nav a span+span{margin-left:1rem}.post-nav .prev{padding-right:1rem}@media(max-width:1199px){.post-title{display:block}}.post-content{font-size:2.2rem}.post-content h2{margin-block:2rem}.post-content h2{margin-top:6rem;font-size:3.5rem}.post-content a{padding-bottom:.2rem;font-weight:500;border-bottom:2px solid var(--pro)}.post-content p,.post-content ul,.post-content ol{margin-bottom:3rem}.post-content ul,.post-content ol{padding-left:2.5rem}.post-content li{margin-top:.6rem}.post-content pre{margin:0 calc(var(--gap)*-1) 4rem;overflow-x:auto;background:var(--hljs-bg) !important;border-radius:.5rem}.post-content code{padding:.5rem 1rem;margin-inline:.5rem;font-family:Menlo,Monaco,courier new,Courier,monospace;font-size:.8em;line-height:1.5;background:rgba(var(--dark),.06);border-radius:.3rem}.post-content pre code{display:block;padding:var(--gap);margin-inline:0;color:rgba(255,255,255,.8);background:0 0;border-radius:0}.footer{display:flex;align-items:center;justify-content:center;max-width:var(--narrow);height:var(--footer);padding-bottom:var(--safe-bottom);margin-top:auto;font-size:1.6rem;color:var(--lit);border-top:1px solid var(--fog)}.footer p+p::before{content:"·";margin-inline:.6rem}.footer a:hover{color:var(--pro);border-bottom:1px solid var(--pro)}.hljs-comment{color:#b6b18b}.hljs-params,.hljs-meta{color:#e7ce56}.hljs-string{color:#4fb4d7}.hljs-title{color:#78bb65}.hljs-keyword{color:#b45ea4}.hljs{overflow-x:auto}</style>
+<meta name=generator content="Hugo 0.89.4">
+<meta property=og:title content="MySQL DATETIME 时区问题防坑指南">
+<meta property=og:description content="由于 DATETIME 存储的时候不带时区，读取到的值依赖应用自己配置的时区，当时区变化之后读写数据就会被坑到……">
+<meta property=og:type content=article>
+<meta property=og:url content=https://cliiip.com/posts/mysql-datetime-timezone-pitfall/><meta property=article:section content=posts>
+<meta property=article:published_time content=2021-12-04T16:26:36+08:00>
+<meta property=article:modified_time content=2021-12-04T16:26:36+08:00>
+<meta itemprop=name content="MySQL DATETIME 时区问题防坑指南">
+<meta itemprop=description content="由于 DATETIME 存储的时候不带时区，读取到的值依赖应用自己配置的时区，当时区变化之后读写数据就会被坑到……"><meta itemprop=datePublished content=2021-12-04T16:26:36+08:00>
+<meta itemprop=dateModified content=2021-12-04T16:26:36+08:00>
+<meta itemprop=wordCount content=393>
+<meta itemprop=keywords content>
+<meta name=twitter:card content=summary>
+<meta name=twitter:title content="MySQL DATETIME 时区问题防坑指南">
+<meta name=twitter:description content="由于 DATETIME 存储的时候不带时区，读取到的值依赖应用自己配置的时区，当时区变化之后读写数据就会被坑到……">
+<style id=_goober>@keyframes go2264125279{from{transform:scale(0) rotate(45deg);opacity:0}to{transform:scale(1) rotate(45deg);opacity:1}}@keyframes go3020080000{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}@keyframes go463499852{from{transform:scale(0) rotate(90deg);opacity:0}to{transform:scale(1) rotate(90deg);opacity:1}}@keyframes go1268368563{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}@keyframes go1310225428{from{transform:scale(0) rotate(45deg);opacity:0}to{transform:scale(1) rotate(45deg);opacity:1}}@keyframes go651618207{0%{height:0;width:0;opacity:0}40%{height:0;width:6px;opacity:1}100%{opacity:1;height:10px}}@keyframes go901347462{from{transform:scale(0.6);opacity:.4}to{transform:scale(1);opacity:1}}</style><meta name=referrer content=no-referrer><link rel=icon href="data:image/x-icon;base64,AAABAAEAEBAAAAEACABoBQAAFgAAACgAAAAQAAAAIAAAAAEACAAAAAAAAAEAABILAAASCwAAAAEAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAAICAgAGBgYACwsLABISEgAYGBgAGRkZABoaGgAbGxsAHBwcAB0dHQAeHh4AHx8fACAgIAAhISEAIiIiACMjIwAkJCQAJSUlACYmJgAnJycAKCgoACkpKQAqKioAKysrACwsLAAtLS0ALi4uAC8vLwAwMDAAMTExADIyMgAzMzMANDQ0ADU1NQA2NjYANzc3ADg4OAA5OTkAOjo6ADs7OwA8PDwAPT09AD4+PgA/Pz8AQEBAAEFBQQBCQkIAQ0NDAERERABFRUUARkZGAEdHRwBISEgASUlJAEpKSgBLS0sATExMAE1NTQBOTk4AT09PAFBQUABRUVEAUlJSAFNTUwBUVFQAVVVVAFZWVgBXV1cAWFhYAFlZWQBaWloAW1tbAFxcXABdXV0AXl5eAF9fXwBgYGAAYWFhAGJiYgBjY2MAZGRkAGVlZQBmZmYAZ2dnAGhoaABpaWkAampqAGtrawBsbGwAbW1tAG5ubgBvb28AcHBwAHFxcQBycnIAc3NzAHR0dAB1dXUAdnZ2AHd3dwB4eHgAeXl5AHp6egB7e3sAfHx8AH19fQB+fn4Af39/AICAgACBgYEAgoKCAIODgwCEhIQAhYWFAIaGhgCHh4cAiIiIAImJiQCKiooAi4uLAIyMjACNjY0Ajo6OAI+PjwCQkJAAkZGRAJKSkgCTk5MAlJSUAJWVlQCWlpYAl5eXAJiYmACZmZkAmpqaAJubmwCcnJwAnZ2dAJ6engCfn58AoKCgAKGhoQCioqIAo6OjAKSkpAClpaUApqamAKenpwCoqKgAqampAKqqqgCrq6sArKysAK2trQCurq4Ar6+vALCwsACxsbEAsrKyALOzswC0tLQAtbW1ALa2tgC3t7cAuLi4ALm5uQC6uroAu7u7ALy8vAC9vb0Avr6+AL+/vwDAwMAAwcHBAMLCwgDDw8MAxMTEAMXFxQDGxsYAx8fHAMjIyADJyckAysrKAMvLywDMzMwAzc3NAM7OzgDPz88A0NDQANHR0QDS0tIA09PTANTU1ADV1dUA1tbWANfX1wDY2NgA2dnZANra2gDb29sA3NzcAN3d3QDe3t4A4ODgAOfn5wDx8fEA+fn5AP39/QD+/v4A/v7+AP7+/gD+/v4A/v7+AP7+/gD+/v4A/v7+AP7+/gD+/v4A/v7+AP7+/gD+/v4A/v7+AP7+/gD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A+fn5+fn5+fn5+fn5+fn5+fkJCQkJCQkJCQkJCQkJCQn5Cfn5+fn5+fn5+fn5+fn5+Qn5CQn5+fn5+QkJCQn5+fkJ+fn5Cfn5+Qn5+fkJ+fn5Cfn5+fkJ+Qn5+fn5Cfn5+Qn5+fn5+Qn5+fn5+Qn5+fkJ+QkJCQkJCQkJCfkJ+fn5Cfn5+Qn5CfkJ+fn5Cfn5+Qn5+fkJ+Qn5Cfn5+Qn5+fkJ+fkJCQkJCQkJ+fkJ+fn5Cfn5+fn5Cfn5+fn5Cfn5+Qn5+fn5+Qn5+fn5+Qn5+fkJ+fn5+fn5+fn5+fkJ+fn5CQkJCQkJCQkJCQkJCfn5+fn5+fn5+fn5+fn5+fn5+QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" data-sf-original-href=https://cliiip.com/favicon.ico><link rel=canonical href=https://cliiip.com/posts/mysql-datetime-timezone-pitfall/><meta http-equiv=content-security-policy content="default-src 'none'; font-src 'self' data:; img-src 'self' data:; style-src 'unsafe-inline'; media-src 'self' data:; script-src 'unsafe-inline' data:; object-src 'self' data:; frame-src 'self' data:;"><style>img[src="data:,"],source[src="data:,"]{display:none!important}</style></head>
+ <body data-menu=false>
+ <header class=header>
+ 
+ <p class=logo>
+ <a class=site-name href=https://cliiip.com/>clip dev blog</a><a class=btn-dark></a>
+ </p>
+ 
+ 
+ 
+ 
+ 
+ <nav class=social>
+ 
+ <a class=github style="--url:/* original URL: https://cliiip.com/posts/mysql-datetime-timezone-pitfall/github.svg */url(data:,)" href=https://github.com/binderclip target=_blank></a>
+ 
+ </nav>
+ 
+</header>
+ <main class=main>
+<article class=post-single>
+ <header class=post-title>
+ <p>
+ <time>Dec 4, 2021</time>
+ 
+ </p>
+ <h1>MySQL DATETIME 时区问题防坑指南</h1>
+ </header>
+ <section class=post-content><h2 id=太长不太长不看直接上结论>太长不太长不看直接上结论</h2>
+<p>MySQL DATETIME 字段在存储的时候只存储了时间的数字信息（比如 2021-12-04 14:15:38），而没有存储时区；</p>
+<p>由于没有存储时区，所以就依赖了 MySQL server、client 运行环境的时区配置；</p>
+<p>MySQL sever 本身运行环境有时区配置，<code>now()</code> 之类的内置函数，或者 <code>dt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP</code> 之类自动设置的时间依赖的是 MySQL server 本身的时区配置；</p>
+<p>MySQL client 一般是应用程序，当通过对应语言的 mysql-driver 连接 MySQL 时，在写入、读取、范围查询时对于 DATETIME 字段实际发送过去的值是字符串类型的，比如 <code>2021-12-04 14:20:12</code>，也是没有时区信息的，应用程序往往会根据配置来解析成对应时区的时间；</p>
+<p>所以使用 DATETIME 字段几乎就必须保证所有相关的 client 和 server 始终使用一个固定时区配置，只要有不同就可能会出现问题。</p>
+<p>比如：</p>
+<ol>
+<li>client 使用的时区和 server 使用的时区不一致，那么 sever 的 <code>NOW()</code> 或者 <code>DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP</code> 得到的值被 client 读到之后发现差了几个小时</li>
+<li>client1 和 client2 同时使用一个 server，但是 client1、client2 的时区配置不一样，或者 client1 原本配置了时区 Asia/Shanghai 后来变成了 UTC，那么读写老数据的时候可能发现范围查询有问题、更新不成功（按时间大小做限定条件更新）、时间范围查询丢数据……等等的诡异问题</li>
+</ol>
+<p><strong>避坑方法：</strong></p>
+<ol>
+<li>继续用 DATETIME 字段，但加以注意
+<ul>
+<li>毕竟有些特性是无法取代的（DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP 或者一些时间函数的操作）或者需要使用一些 DATETIME 相关的函数操作</li>
+<li>那么这时候尽量保证 MySQL 服务器的时区配置和 client 的时区配置相同</li>
+<li>如果机房仅部署在国内，未来也不会再其他国家、地区部署，业务也仅限于国内，那么使用固定时区问题不大</li>
+<li>如果机房可能部署在其他国家、地区，那么部署的时候要么写死全都用 +8 时区，比如 Asia/Shanghai，或者固定 UTC 时区，或者使用各地时区，但处理好不同时区之间机器间的数据交互（总体还是比较容易出问题的，某个环节漏掉就可能导致问题，比如文后的“DATETIME 时区踩坑”）</li>
+</ul>
+</li>
+<li>改用 TIMESTAMP 存储时间戳
+<ul>
+<li>类似 DATETIME 字段，且支持一些 MySQL 自带的时间更新、函数操作</li>
+<li>可能会在更新行记录的时候自动更新行内 TIMESTAMP 类型字段的值，需要注意一下</li>
+<li>有效范围比 DATETIME 要小，从 <code>'1970-01-01 00:00:01.000000'</code> UTC 到 <code>'2038-01-19 03:14:07.999999'</code> UTC，目前 2021 年，有效时间不长了</li>
+</ul>
+</li>
+<li>改用 int 存储时间戳
+<ul>
+<li>如果程序里面的时间字段全都来自于程序设置，且只需要一些简单操作，那么可以用 int 来表示</li>
+<li>时间戳不受时区影响，在不同时区的同一时刻获取的时间戳是相同的，所以不会存在时区问题</li>
+<li>需要注意一下使用 INT 还是 BIGINT，以及使用的时间戳的精度是 s、ms、us 还是 ns</li>
+</ul>
+</li>
+</ol>
+<p>如果想继续了解一些细节，欢迎阅读后面的部分 👇🏻</p>
+<h2 id=mysql-的-time-类型存储>MySQL 的 time 类型存储</h2>
+<p>详见：</p>
+<p><a href=https://dev.mysql.com/doc/internals/en/date-and-time-data-type-representation.html>MySQL :: MySQL Internals Manual :: 10.9 Date and Time Data Type Representation</a></p>
+<p>划重点：</p>
+<ul>
+<li>5.6.4 前和后实现有所不同，这里只说 5.6.4 及以后</li>
+<li>DATETIME 有可选的小数部分，根据小数位数不同，占用不同的存储空间</li>
+<li>TIMESTAMP 也有可选的小数部分以满足不同进度的需要</li>
+</ul>
+<pre tabindex=0><code class="hljs properties"><span class=hljs-attr>DATETIME</span> <span class=hljs-string>整数部分：</span>
+ <span class=hljs-attr>1</span> <span class=hljs-string>bit  sign           (1= non-negative, 0= negative)</span>
+<span class=hljs-attr>17</span> <span class=hljs-string>bits year*13+month  (year 0-9999, month 0-12) (2^17 = 131072)</span>
+ <span class=hljs-attr>5</span> <span class=hljs-string>bits day            (0-31) (2^5 = 32)</span>
+ <span class=hljs-attr>5</span> <span class=hljs-string>bits hour           (0-23)</span>
+ <span class=hljs-attr>6</span> <span class=hljs-string>bits minute         (0-59)</span>
+ <span class=hljs-attr>6</span> <span class=hljs-string>bits second         (0-59) (2^6 = 64)</span>
+<span class=hljs-attr>---------------------------</span>
+<span class=hljs-attr>40</span> <span class=hljs-string>bits = 5 bytes</span>
+
+<span class=hljs-attr>TIMESTAMP</span> <span class=hljs-string>整数部分：</span>
+<span class=hljs-attr>4</span> <span class=hljs-string>bytes 2^32 = 4294967296 2106-02-07 06:28:16 UTC</span>
+<span class=hljs-meta>2^31</span> = <span class=hljs-string>2147483648 2038-01-19 03:14:08 UTC</span>
+<span class=hljs-meta>//</span> <span class=hljs-string>可能第一个 bit 用来做一些其他工作，文档中没有详细描写</span>
+
+<span class=hljs-attr>小数部分：</span>
+<span class=hljs-attr>0</span>     <span class=hljs-string>0 bytes</span>
+<span class=hljs-meta>1,2</span>   <span class=hljs-string>1 byte  (2^8 = 256)</span>
+<span class=hljs-meta>3,4</span>   <span class=hljs-string>2 bytes (2^16 = 65536)</span>
+<span class=hljs-meta>4,5</span>   <span class=hljs-string>3 bytes (2^24 = 16777216)</span>
+</code></pre><p>根据存储实现可以很清楚的看出 DATETIME 是没有存储时区信息的。</p>
+<h2 id=golang-mysql-driver-中-timetime-到-datetime-的转换>golang mysql-driver 中 time.Time 到 DATETIME 的转换</h2>
+<p>项目地址：<a href=https://github.com/go-sql-driver/mysql>go-sql-driver/mysql</a></p>
+<pre tabindex=0><code class="hljs cs"><span class=hljs-comment>// packets.go:909</span>
+writeExecutePacket
+  <span class=hljs-comment>// 是实际的把语句传输给 MySQL 的函数</span>
+  <span class=hljs-comment>// 对于 time 类型的 arg 会做一次转换</span>
+  appendDateTime(b, v.In(mc.cfg.Loc)) <span class=hljs-comment>// appendDateTime 基本是一个 timeToString 的操作，关键是这里有一次转换时区</span>
+
+<span class=hljs-comment>// 或者如何设置了 InterpolateParams（提前把参数放入 SQL）</span>
+<span class=hljs-comment>// 那么在 connection.go:297 Exec 函数中会调用 interpolateParams</span>
+<span class=hljs-comment>// connection.go:198</span>
+<span class=hljs-function>interpolateParams
+  <span class=hljs-title>appendDateTime</span>(<span class=hljs-params>buf, v.In(mc.cfg.Loc</span>)) <span class=hljs-comment>// 同样会有 appendDateTime 的 time.Time 转 string 的操作</span>
+
+<span class=hljs-comment>// 至于 mc.cfg.Loc 的配置，来自最开始的 MySQL 设置，可以是专门的 Config，或者是从 DSN 字符串中解析</span>
+<span class=hljs-comment>// dsn.go:369</span>
+parseDSNParams
+  <span class=hljs-comment>// 解析 DSN</span>
+  <span class=hljs-comment>// 对于 loc</span>
+  cfg.Loc, err</span> = time.LoadLocation(<span class=hljs-keyword>value</span>) <span class=hljs-comment>// 实际就是执行了一次 golang 的 LoadLocation 操作</span>
+                                          <span class=hljs-comment>// 一般情况是 =Local，那么就依赖 golang 运行的环境了</span>
+</code></pre><h2 id=datetime-时区踩坑>DATETIME 时区踩坑</h2>
+<p>工作里面有个项目，代码同时在国内和海外的服务器上运行，数据是隔离的，已经平稳地运行了一段时间。</p>
+<p>实际上服务的启动脚本里面强制设置了 <code>TZ=Asia/Shanghai</code>（golang 会依靠这个环境变量作为 Local 的时区），在海外的服务器上原本也是这么运行的，所以海外的数据库里面放的时间比如 <code>2021-12-04 16:00:00</code> 其实是指北京时间（+8 时区）的下午 16 点。</p>
+<p>由于这个设置比较久远，当时添加的同事早就不负责这个项目了。在迁移代码仓库的时候漏掉了这个环境变量配置，导致新的项目部署之后传输给数据库的是 UTC 时间，这样就导致出现问题了。</p>
+<p>更新数据的时候有 <code>where update_time &lt; ?</code> 的判断，因为这次传了 UTC（UTC 是 +0 时区，+8 时区的 <code>2021-12-04 16:00:00</code> 对应了 +0 时区的 <code>2021-12-04 08:00:00</code>），这样去数据库更新的时候如果前面不久用 +8 时区时间更新过，数据库里的 update_time 比传入的还大，所以就更新不上，用户的数据就处理错误了。</p>
+<p>类似的，查询数据的时候原本想查询 now 之前的（<code>where update_time &lt; '2021-12-04 16:00:00'</code>），就变成了 now-8h 之前的（<code>where update_time &lt; '2021-12-04 08:00:00'</code>），导致漏查了最近 8 小时的数据。</p>
+</section>
+ 
+ 
+ 
+ 
+ 
+ <nav class=post-nav>
+ 
+ <a class=prev href=https://cliiip.com/posts/case-thanks-to-rocketmqs-dead-letter-queue/><span>←</span><span>实际 case：多亏了 RocketMQ 的死信队列</span></a>
+ 
+ </nav>
+ 
+ 
+ 
+</article>
+</main>
+ <footer class=footer>
+ <p>© 2022 <a href=https://cliiip.com/>clip dev blog</a></p>
+ <p>Powered by <a href=https://gohugo.io/ rel=noopener target=_blank>Hugo️️</a>️</p>
+ <p>
+ <a href=https://github.com/nanxiaobei/hugo-paper rel=noopener target=_blank>Paper 5.1</a>
+ </p>
+</footer>
+ 
